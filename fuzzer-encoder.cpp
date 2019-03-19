@@ -2,10 +2,13 @@
 
 #include <fuzzing/datasource/datasource.hpp>
 #include <stdexcept>
+#include <memory>
 #include <string>
 #include <stdint.h>
 #include <stdlib.h>
+#include <cmath>
 #include <lame.h>
+#include <sstream>
 
 using fuzzing::datasource::Datasource;
 
@@ -24,8 +27,9 @@ class Limit {
             return val;
         }
 
+        template <typename T = uint32_t>
         size_t Generate(fuzzing::datasource::Datasource& ds) {
-            const size_t ret = ds.Get<uint32_t>();
+            const size_t ret = ds.Get<T>();
             return Test(ret);
         }
 };
@@ -37,9 +41,555 @@ namespace limits {
     static Limit ABRBitrate(1, 1024);
     static Limit CBRBitrate(1, 1024);
     static Limit OutSamplerate(100, 1000000);
-    static Limit Quality(100, 1000000);
+    static Limit Quality(0, 9);
 }
 
+#define _(expr) Debug ? printf("%s\n", #expr) : 0; expr;
+
+class EncoderCoreBase {
+    public:
+        EncoderCoreBase(void) { }
+        virtual ~EncoderCoreBase() { }
+        virtual bool Run(uint8_t* outBuffer, const size_t outBufferSize, const bool mono) = 0;
+};
+
+
+template <typename T> bool isNAN(const T& val) {
+    (void)val;
+
+    return false;
+}
+
+template <> bool isNAN<float>(const float& val) {
+    return std::isnan(val);
+}
+
+template <> bool isNAN<double>(const double& val) {
+    return std::isnan(val);
+}
+
+std::string debug_define_size_t(const std::string name, const size_t val) {
+    return "const size_t " + name + " = " + std::to_string(val) + ";";
+}
+
+template <typename T>
+struct DebugDefineArray {
+    static std::string Str(const std::string name, const T* inData, const size_t inDataSize, const bool indent) {
+        std::stringstream ret;
+
+        if ( indent ) {
+            ret << "\t";
+        }
+
+        ret << "const float " + name + "[] = {\n";
+
+        if ( indent ) {
+            ret << "\t";
+        }
+
+        for (size_t i = 0; i < inDataSize; i++) {
+            if ( i && !(i % 16) ) {
+                ret << "\n";
+                if ( indent ) {
+                    ret << "\t";
+                }
+            }
+
+            ret << "\t" << std::to_string(inData[i]) << ", ";
+        }
+        ret << "\n";
+
+        if ( indent ) {
+            ret << "\t";
+        }
+
+        ret << "};\n";
+
+        return ret.str();
+    }
+};
+
+template <typename T, bool Debug>
+class EncoderCore : public EncoderCoreBase {
+    private:
+        Datasource& ds;
+        lame_global_flags* flags;
+
+        std::vector< std::vector<T> > inDataV;
+        typename std::vector< std::vector<T> >::iterator it;
+        const bool useInterleavingFunction;
+        const bool useIEEEFunction;
+
+        void getInputData(void) {
+            while ( ds.Get<bool>() ) {
+                const auto data = ds.GetData(0);
+
+                /* Round to a multiple of sizeof(T) */
+                const size_t copySize = data.size() - (data.size() % sizeof(T));
+
+                std::vector<T> toInsert;
+                toInsert.resize( data.size() / sizeof(T) );
+
+                memcpy(toInsert.data(), data.data(), copySize);
+
+                /* Correct NAN values */
+                for (size_t i = 0; i < toInsert.size(); i++) {
+                    if ( isNAN(toInsert[i]) ) {
+                        toInsert[i] = {};
+                    }
+                }
+
+                inDataV.push_back(toInsert);
+            }
+            it = inDataV.begin();
+        }
+
+        template <typename _T, long Min, long Max>
+        struct InputCorrect {
+            static void Correct(_T* inData, const size_t inDataSize) {
+                if ( inData == nullptr ) {
+                    return;
+                }
+
+                for (size_t i = 0; i < inDataSize; i++) {
+                    if ( inData[i] > Max ) {
+                        inData[i] = Max;
+                    } else if ( inData[i] < Min ) {
+                        inData[i] = Min;
+                    }
+                }
+            }
+        };
+
+        template <typename T_, bool Debug_>
+        struct EncodeSingle {
+            static int encode(
+                    lame_global_flags* flags,
+                    T* inData,
+                    const size_t inDataSize,
+                    uint8_t* outBuffer,
+                    const size_t outBufferSize,
+                    bool useInterleavedFunction,
+                    bool useIEEEFunction);
+        };
+
+        template<bool Debug_> struct EncodeSingle<short int, Debug_> {
+            static int encode(
+                    lame_global_flags* flags,
+                    short int* inDataL,
+                    short int* inDataR,
+                    const size_t inDataSize,
+                    uint8_t* outBuffer,
+                    const size_t outBufferSize,
+                    bool useInterleavingFunction,
+                    bool useIEEEFunction) {
+                /* Not applicable for short int */
+                (void)useIEEEFunction;
+
+                if ( useInterleavingFunction == false ) {
+                    Debug ? printf("{\n") : 0;
+
+                    Debug ? printf("\t%s\n", debug_define_size_t("inDataSize", inDataSize).c_str()) : 0;
+
+                    Debug ? printf("%s\n", DebugDefineArray<short int>::Str("inDataL", inDataL, inDataSize, true).c_str()) : 0;
+                    Debug ? printf("%s\n", DebugDefineArray<short int>::Str("inDataR", inDataR, inDataSize, true).c_str()) : 0;
+
+                    const int ret = lame_encode_buffer(flags, inDataL, inDataR, inDataSize, outBuffer, outBufferSize);
+
+                    Debug ? printf("\t// (returns %d)\n", ret) : 0;
+
+                    Debug ? printf("}\n") : 0;
+
+                    return ret;
+                } else {
+                    Debug ? printf("{\n") : 0;
+
+                    Debug ? printf("\t%s\n", debug_define_size_t("inDataSize", inDataSize).c_str()) : 0;
+
+                    Debug ? printf("%s\n", DebugDefineArray<short int>::Str("inDataL", inDataL, inDataSize * 2, true).c_str()) : 0;
+
+                    const int ret = lame_encode_buffer_interleaved(flags, inDataL, inDataSize, outBuffer, outBufferSize);
+
+                    Debug ? printf("\t// (returns %d)\n", ret) : 0;
+
+                    Debug ? printf("}\n") : 0;
+
+                    return ret;
+                }
+            }
+        };
+
+        template<bool Debug_> struct EncodeSingle<int, Debug_> {
+            static int encode(
+                    lame_global_flags* flags,
+                    int* inDataL,
+                    int* inDataR,
+                    const size_t inDataSize,
+                    uint8_t* outBuffer,
+                    const size_t outBufferSize,
+                    bool useInterleavingFunction,
+                    bool useIEEEFunction ) {
+                /* Not applicable for int */
+                (void)useIEEEFunction;
+
+                if ( useInterleavingFunction == false ) {
+                    Debug ? printf("{\n") : 0;
+
+                    Debug ? printf("\t%s\n", debug_define_size_t("inDataSize", inDataSize).c_str()) : 0;
+
+                    Debug ? printf("%s\n", DebugDefineArray<int>::Str("inDataL", inDataL, inDataSize, true).c_str()) : 0;
+                    Debug ? printf("%s\n", DebugDefineArray<int>::Str("inDataR", inDataR, inDataSize, true).c_str()) : 0;
+
+                    Debug ?
+                        printf("\tlame_encode_buffer_int(flags, inDataL, inDataR, inDataSize, outBuffer, outBufferSize);\n")
+                        : 0;
+
+                    const int ret = lame_encode_buffer_int(flags, inDataL, inDataR, inDataSize, outBuffer, outBufferSize);
+
+                    Debug ? printf("\t// (returns %d)\n", ret) : 0;
+
+                    Debug ? printf("}\n") : 0;
+
+                    return ret;
+                } else {
+                    Debug ? printf("{\n") : 0;
+
+                    Debug ? printf("\t%s\n", debug_define_size_t("inDataSize", inDataSize).c_str()) : 0;
+
+                    Debug ? printf("%s\n", DebugDefineArray<int>::Str("inDataL", inDataL, inDataSize * 2, true).c_str()) : 0;
+
+                    Debug ?
+                        printf("\tlame_encode_buffer_interleaved_int(flags, inDataL, inDataSize, outBuffer, outBufferSize);\n")
+                        : 0;
+
+                    const int ret = lame_encode_buffer_interleaved_int(flags, inDataL, inDataSize, outBuffer, outBufferSize);
+
+                    Debug ? printf("\t// (returns %d)\n", ret) : 0;
+
+                    Debug ? printf("}\n") : 0;
+
+                    return ret;
+                }
+            }
+        };
+
+        template<bool Debug_> struct EncodeSingle<long, Debug_> {
+            static int encode(
+                    lame_global_flags* flags,
+                    long* inDataL,
+                    long* inDataR,
+                    const size_t inDataSize,
+                    uint8_t* outBuffer,
+                    const size_t outBufferSize,
+                    bool useInterleavingFunction,
+                    bool useIEEEFunction) {
+                /* Not applicable for long */
+                (void)useIEEEFunction;
+
+                if ( useInterleavingFunction == false ) {
+                    InputCorrect<long, -32768, 32768>::Correct(inDataL, inDataSize);
+                    InputCorrect<long, -32768, 32768>::Correct(inDataR, inDataSize);
+
+                    Debug ? printf("{\n") : 0;
+
+                    Debug ? printf("\t%s\n", debug_define_size_t("inDataSize", inDataSize).c_str()) : 0;
+
+                    Debug ? printf("%s\n", DebugDefineArray<long>::Str("inDataL", inDataL, inDataSize, true).c_str()) : 0;
+                    Debug ? printf("%s\n", DebugDefineArray<long>::Str("inDataR", inDataR, inDataSize, true).c_str()) : 0;
+
+                    Debug ?
+                        printf("\tlame_encode_buffer_long(flags, inDataL, inDataR, inDataSize, outBuffer, outBufferSize);\n")
+                        : 0;
+
+                    const int ret = lame_encode_buffer_long(flags, inDataL, inDataR, inDataSize, outBuffer, outBufferSize);
+
+                    Debug ? printf("\t// (returns %d)\n", ret) : 0;
+
+                    Debug ? printf("}\n") : 0;
+
+                    return ret;
+                } else {
+                    Debug ? printf("{\n") : 0;
+
+                    Debug ? printf("\t%s\n", debug_define_size_t("inDataSize", inDataSize).c_str()) : 0;
+
+                    Debug ? printf("%s\n", DebugDefineArray<long>::Str("inDataL", inDataL, inDataSize * 2, true).c_str()) : 0;
+
+                    Debug ?
+                        printf("\tlame_encode_buffer_long2(flags, inDataL, inDataR, inDataSize, outBuffer, outBufferSize);\n")
+                        : 0;
+
+                    /* Not actually interleaved */
+                    const int ret = lame_encode_buffer_long2(flags, inDataL, inDataR, inDataSize, outBuffer, outBufferSize);
+
+                    Debug ? printf("\t// (returns %d)\n", ret) : 0;
+
+                    Debug ? printf("}\n") : 0;
+
+                    return ret;
+                }
+            }
+        };
+
+        template<bool Debug_> struct EncodeSingle<float, Debug_> {
+            static int encode(
+                    lame_global_flags* flags,
+                    float* inDataL,
+                    float* inDataR,
+                    const size_t inDataSize,
+                    uint8_t* outBuffer,
+                    const size_t outBufferSize,
+                    bool useInterleavingFunction,
+                    bool useIEEEFunction) {
+
+                if ( useInterleavingFunction == false ) {
+                    if ( useIEEEFunction == false ) {
+                        InputCorrect<float, -32768, 32768>::Correct(inDataL, inDataSize);
+                        InputCorrect<float, -32768, 32768>::Correct(inDataR, inDataSize);
+
+                        Debug ? printf("{\n") : 0;
+
+                        Debug ? printf("\t%s\n", debug_define_size_t("inDataSize", inDataSize).c_str()) : 0;
+
+                        Debug ? printf("%s\n", DebugDefineArray<float>::Str("inDataL", inDataL, inDataSize, true).c_str()) : 0;
+                        Debug ? printf("%s\n", DebugDefineArray<float>::Str("inDataR", inDataR, inDataSize, true).c_str()) : 0;
+
+                        Debug ?
+                            printf("\tlame_encode_buffer_float(flags, inDataL, inDataR, inDataSize, outBuffer, outBufferSize);\n")
+                            : 0;
+
+                        const int ret = lame_encode_buffer_float(flags, inDataL, inDataR, inDataSize, outBuffer, outBufferSize);
+
+                        Debug ? printf("\t// (returns %d)\n", ret) : 0;
+
+                        Debug ? printf("}\n") : 0;
+
+                        return ret;
+                    } else {
+                        InputCorrect<float, -1, 1>::Correct(inDataL, inDataSize);
+                        InputCorrect<float, -1, 1>::Correct(inDataR, inDataSize);
+
+                        Debug ? printf("{\n") : 0;
+
+                        Debug ? printf("\t%s\n", debug_define_size_t("inDataSize", inDataSize).c_str()) : 0;
+
+                        Debug ? printf("%s\n", DebugDefineArray<float>::Str("inDataL", inDataL, inDataSize, true).c_str()) : 0;
+                        Debug ? printf("%s\n", DebugDefineArray<float>::Str("inDataR", inDataR, inDataSize, true).c_str()) : 0;
+
+                        Debug ?
+                            printf("\tlame_encode_buffer_ieee_float(flags, inDataL, inDataR, inDataSize, outBuffer, outBufferSize);\n")
+                            : 0;
+
+                        const int ret = lame_encode_buffer_ieee_float(flags, inDataL, inDataR, inDataSize, outBuffer, outBufferSize);
+
+                        Debug ? printf("\t// (returns %d)\n", ret) : 0;
+
+                        Debug ? printf("}\n") : 0;
+
+                        return ret;
+                    }
+                } else {
+                    if ( useIEEEFunction == true ) {
+                        InputCorrect<float, -1, 1>::Correct(inDataL, inDataSize * 2);
+
+                        Debug ? printf("{\n") : 0;
+
+                        Debug ? printf("\t%s\n", debug_define_size_t("inDataSize", inDataSize * 2).c_str()) : 0;
+
+                        Debug ? printf("%s\n", DebugDefineArray<float>::Str("inDataL", inDataL, inDataSize * 2, true).c_str()) : 0;
+
+                        Debug ?
+                            printf("\tlame_encode_buffer_interleaved_ieee_float(flags, inDataL, inDataSize, outBuffer, outBufferSize);\n")
+                            : 0;
+
+                        const int ret = lame_encode_buffer_interleaved_ieee_float(flags, inDataL, inDataSize, outBuffer, outBufferSize);
+
+                        Debug ? printf("\t// (returns %d)\n", ret) : 0;
+
+                        Debug ? printf("}\n") : 0;
+
+                        return ret;
+                    } else {
+                        /* No function for interleaved float */
+                        return -1;
+                    }
+                }
+            }
+        };
+
+        template<bool Debug_> struct EncodeSingle<double, Debug_> {
+            int static encode(
+                    lame_global_flags* flags,
+                    double* inDataL,
+                    double* inDataR,
+                    const size_t inDataSize,
+                    uint8_t* outBuffer,
+                    const size_t outBufferSize,
+                    bool useInterleavingFunction,
+                    bool useIEEEFunction) {
+
+                if ( useInterleavingFunction == true ) {
+                    if ( useIEEEFunction == false ) {
+                        InputCorrect<double, -1, 1>::Correct(inDataL, inDataSize);
+                        InputCorrect<double, -1, 1>::Correct(inDataR, inDataSize);
+
+                        Debug ? printf("{\n") : 0;
+
+                        Debug ? printf("\t%s\n", debug_define_size_t("inDataSize", inDataSize).c_str()) : 0;
+
+                        Debug ? printf("%s\n", DebugDefineArray<double>::Str("inDataL", inDataL, inDataSize * 2, true).c_str()) : 0;
+
+                        Debug ?
+                            printf("lame_encode_buffer_interleaved_ieee_double(flags, inDataL, inDataSize, outBuffer, outBufferSize);\n")
+                            : 0;
+
+                        const int ret = lame_encode_buffer_interleaved_ieee_double(flags, inDataL, inDataSize, outBuffer, outBufferSize);
+
+
+                        Debug ? printf("\t// (returns %d)\n", ret) : 0;
+
+                        Debug ? printf("}\n") : 0;
+
+                        return ret;
+                    } else {
+                        /* No non-IEEE function for double */
+                        return -1;
+                    }
+                } else {
+                    if ( useIEEEFunction == false ) {
+                        /* No non-IEEE function for interleaved double */
+                        return -1;
+                    } else {
+                        InputCorrect<double, -1, 1>::Correct(inDataL, inDataSize);
+
+                        Debug ? printf("{\n") : 0;
+
+                        Debug ? printf("\t%s\n", debug_define_size_t("inDataSize", inDataSize).c_str()) : 0;
+
+                        Debug ? printf("%s\n", DebugDefineArray<double>::Str("inDataL", inDataL, inDataSize, true).c_str()) : 0;
+
+                        Debug ?
+                            printf("\tlame_encode_buffer_ieee_double(flags, inDataL, inDataR, inDataSize, outBuffer, outBufferSize);\n")
+                            : 0;
+
+                        const int ret = lame_encode_buffer_ieee_double(flags, inDataL, inDataR, inDataSize, outBuffer, outBufferSize);
+
+                        Debug ? printf("\t// (returns %d)\n", ret) : 0;
+
+                        Debug ? printf("}\n") : 0;
+
+                        return ret;
+                    }
+                }
+            }
+        };
+
+        int encode(std::vector<T>& inData, uint8_t* outBuffer, const size_t outBufferSize, const bool mono) {
+            if ( useInterleavingFunction && mono ) {
+                return false;
+            }
+
+            if ( mono == true ) {
+                return EncodeSingle<T, Debug>::encode(flags, inData.data(), nullptr, inData.size() / 2, outBuffer, outBufferSize, useInterleavingFunction, useIEEEFunction);
+            } else if ( useInterleavingFunction ) {
+                const size_t numSamples = inData.size() / 2;
+
+                std::vector<T> inDataCopy;
+                inDataCopy.resize(numSamples);
+
+                memcpy(inDataCopy.data(), inData.data(), numSamples * 2);
+
+                return EncodeSingle<T, Debug>::encode(flags, inData.data(), nullptr, numSamples, outBuffer, outBufferSize, useInterleavingFunction, useIEEEFunction);
+            } else {
+                std::vector<T> inDataL, inDataR;
+
+                inDataL.resize(inData.size() / 2);
+                inDataR.resize(inData.size() / 2);
+
+                const size_t numSamples = inData.size() / 2;
+                memcpy(inDataL.data(), inData.data(), numSamples);
+                memcpy(inDataR.data(), inData.data() + numSamples, numSamples);
+
+                return EncodeSingle<T, Debug>::encode(flags, inDataR.data(), inDataL.data(), numSamples, outBuffer, outBufferSize, useInterleavingFunction, useIEEEFunction);
+            }
+        }
+
+        int flush(uint8_t* outBuffer, const size_t outBufferSize) {
+            if ( ds.Get<bool>() ) {
+                /* No flush */
+                return 0;
+            }
+
+            if ( ds.Get<bool>() ) {
+                Debug ?
+                    printf("lame_encode_flush(flags, outBuffer, outBufferSize);\n")
+                    : 0;
+
+                const int ret = lame_encode_flush(flags, outBuffer, outBufferSize);
+
+                Debug ? printf("// (returns %d)\n", ret) : 0;
+
+                return ret;
+            } else {
+#if 0
+                /* XXX disabled because it prints:
+                 * "strange error flushing buffer ..."
+                 */
+                Debug ?
+                    printf("lame_encode_flush_nogap(flags, outBuffer, outBufferSize);\n")
+                    : 0;
+
+                const int ret = lame_encode_flush_nogap(flags, outBuffer, outBufferSize);
+
+                Debug ? printf("// (returns %d)\n", ret) : 0;
+
+                return ret;
+#else
+                return 0;
+#endif
+            }
+        }
+    public:
+        EncoderCore(Datasource& ds, lame_global_flags* flags) :
+            EncoderCoreBase(),
+            ds(ds),
+            flags(flags),
+            it(inDataV.end()),
+            useInterleavingFunction( ds.Get<bool>() ),
+            useIEEEFunction( ds.Get<bool>() )
+        {
+            getInputData();
+        }
+
+        bool Run(uint8_t* outBuffer, const size_t outBufferSize, const bool mono) override {
+            if ( it == inDataV.end() ) {
+                return false;
+            }
+
+            auto& inData = *it;
+            it++;
+
+            const int encodeRet = encode(inData, outBuffer, outBufferSize, mono);
+
+            if ( encodeRet < 0 ) {
+                return false;
+            }
+
+            if ( flush(outBuffer, outBufferSize) < 0 ) {
+                return false;
+            }
+
+            if ( encodeRet == 0 ) {
+                return false;
+            }
+
+            return true;
+        }
+};
+
+/* In the interest of speed, let Debug be a template parameter,
+ * so that in non-debug mode, all debug checks will be optimized away.
+ */
 template <bool Debug>
 class EncoderFuzzer {
     private:
@@ -47,31 +597,35 @@ class EncoderFuzzer {
         lame_global_flags* flags = nullptr;
         uint8_t* outBuffer = nullptr;
         const size_t outBufferSize;
-        
+        std::vector< std::vector<int> > inDataV;
+        bool mono = false;
+
         void setBitrateModeVBR_RH(void) {
-            lame_set_VBR(flags, vbr_rh);
-            Debug ? printf("VBR = vbr_rh\n") : 0;
+            _(lame_set_VBR(flags, vbr_rh););
         }
 
         void setBitrateModeVBR_MTRH(void) {
-            lame_set_VBR(flags, vbr_mtrh);
-            Debug ? printf("VBR = vbr_mtrh\n") : 0;
+            _(lame_set_VBR(flags, vbr_mtrh););
         }
 
         void setBitrateModeVBR_ABR(void) {
-            lame_set_VBR(flags, vbr_abr);
-            Debug ? printf("VBR = vbr_abr\n") : 0;
+            _(lame_set_VBR(flags, vbr_abr););
 
             const size_t ABRBitrate = limits::ABRBitrate.Generate(ds);
-            lame_set_VBR_mean_bitrate_kbps(flags, ABRBitrate);
-            Debug ? printf("ABR bitrate = %zu\n", ABRBitrate) : 0;
+
+            Debug ? printf("lame_set_VBR_mean_bitrate_kbps(flags, %zu);\n", ABRBitrate) : 0;
+
+            _(lame_set_VBR_mean_bitrate_kbps(flags, ABRBitrate););
         }
 
         size_t setMinBitrate(void) {
             if ( ds.Get<bool>() ) return 0;
 
             const size_t minBitrate = limits::MinBitrate.Generate(ds);
-            Debug ? printf("VBR = min bitrate = %zu\n", minBitrate) : 0;
+
+            Debug ? printf("lame_set_VBR_min_bitrate_kbps(flags, %zu);\n", minBitrate) : 0;
+
+            lame_set_VBR_min_bitrate_kbps(flags, minBitrate);
 
             return minBitrate;
         }
@@ -83,8 +637,10 @@ class EncoderFuzzer {
             if ( minBitrate > maxBitrate ) {
                 throw std::runtime_error("minBitrate > maxBitrate");
             }
+
+            Debug ? printf("lame_set_VBR_max_bitrate_kbps(flags, %zu);\n", maxBitrate) : 0;
+
             lame_set_VBR_max_bitrate_kbps(flags, maxBitrate);
-            Debug ? printf("VBR = max bitrate = %zu\n", maxBitrate) : 0;
         }
 
         void setBitrateModeVBR(void) {
@@ -100,82 +656,130 @@ class EncoderFuzzer {
             size_t minBitrate = setMinBitrate();
             setMaxBitrate(minBitrate);
         }
-        
+
         void setBitrateModeCBR(void) {
-            lame_set_VBR(flags, vbr_off);
-            Debug ? printf("VBR = vbr_off\n") : 0;
+            _(lame_set_VBR(flags, vbr_off););
 
             const size_t bitrate = limits::CBRBitrate.Generate(ds);
 
-            lame_set_brate(flags, bitrate); 
+            Debug ? printf("lame_set_brate(flags, %zu);\n", bitrate) : 0;
 
-            Debug ? printf("bitrate = %zu\n", bitrate) : 0;
+            _(lame_set_brate(flags, bitrate););
         }
 
         void setBitrateMode(void) {
             ds.Get<bool>() ? setBitrateModeVBR() : setBitrateModeCBR();
         }
 
+        void setInputChannels(void) {
+            const int numChannels = ds.Get<bool>() ? 1 : 2;
+
+            Debug ? printf("lame_set_num_channels(flags, %d);\n", numChannels) : 0;
+
+            lame_set_num_channels(flags, numChannels);
+
+            if ( numChannels == 1 ) {
+                mono = true;
+            }
+        }
+
         void setChannelMode(void) {
             const uint8_t whichChannelMode = ds.Get<uint8_t>() % 3;
             if ( whichChannelMode == 0 ) {
-                lame_set_mode(flags, STEREO);
-                Debug ? printf("mode = STEREO\n") : 0;
+                _(lame_set_mode(flags, STEREO););
             } else if ( whichChannelMode == 1 ) {
-                lame_set_mode(flags, JOINT_STEREO);
-                Debug ? printf("mode = JOINT_STEREO\n") : 0;
+                _(lame_set_mode(flags, JOINT_STEREO););
             } else if ( whichChannelMode == 2 ) {
-                lame_set_mode(flags, MONO);
-                Debug ? printf("mode = MONO\n") : 0;
+                _(lame_set_mode(flags, MONO););
             }
         }
 
         void setQuality(void) {
-            const size_t quality = limits::Quality.Generate(ds);
+            const size_t quality = limits::Quality.Generate<uint8_t>(ds);
+
+            Debug ? printf("lame_set_quality(flags, %zu);\n", quality) : 0;
+
             lame_set_quality(flags, quality);
-            Debug ? printf("quality = %zu\n", quality) : 0;
         }
 
         void setOutSamplerate(void) {
             const size_t outSamplerate = limits::OutSamplerate.Generate(ds);
+
+            Debug ? printf("lame_set_out_samplerate(flags, %zu);\n", outSamplerate) : 0;
+
             lame_set_out_samplerate(flags, outSamplerate);
-            Debug ? printf("out samplerate = %zu\n", outSamplerate) : 0;
         }
 
-        void encodeLoop(void) {
-            while ( ds.Get<bool>() ) { 
-                /* Get some data to encode */
-                const auto inData = ds.GetData(0);
+        void setID3(void) {
+            /* Optionally set various ID3 fields */
 
-                if ( lame_encode_buffer_interleaved(flags, (short int*)inData.data(), inData.size()/sizeof(int)/2, outBuffer, outBufferSize) < 0 ) {
-                    break;
-                }
-
-                if ( lame_encode_flush(flags, outBuffer, outBufferSize) < 0 ) {
-                    break;
+            if ( ds.Get<bool>() ) {
+                id3tag_init(flags);
+                if ( ds.Get<bool>() ) id3tag_set_title(flags, ds.Get<std::string>().c_str());
+                if ( ds.Get<bool>() ) id3tag_set_artist(flags, ds.Get<std::string>().c_str());
+                if ( ds.Get<bool>() ) id3tag_set_album(flags, ds.Get<std::string>().c_str());
+                if ( ds.Get<bool>() ) id3tag_set_year(flags, ds.Get<std::string>().c_str());
+                if ( ds.Get<bool>() ) id3tag_set_comment(flags, ds.Get<std::string>().c_str());
+                if ( ds.Get<bool>() ) id3tag_set_track(flags, ds.Get<std::string>().c_str());
+                if ( ds.Get<bool>() ) id3tag_set_genre(flags, ds.Get<std::string>().c_str());
+                if ( ds.Get<bool>() ) id3tag_set_fieldvalue(flags, ds.Get<std::string>().c_str());
+                if ( ds.Get<bool>() ) {
+                    const auto albumArt = ds.GetData(0);
+                    id3tag_set_albumart(flags, (const char*)albumArt.data(), albumArt.size());
                 }
             }
         }
+
     public:
         EncoderFuzzer(Datasource& ds) :
             ds(ds), outBufferSize(limits::OutBufferSize.Generate(ds))
         {
+            Debug ?
+                printf("lame_global_flags* flags = lame_init();\n")
+                : 0;
             flags = lame_init();
+
+            Debug ?
+                printf("const size_t outBufferSize = %zu\n", outBufferSize)
+                : 0;
+            Debug ?
+                printf("unsigned char outBuffer[outBufferSize];\n")
+                : 0;
+
             outBuffer = (uint8_t*)malloc(outBufferSize + 1024);
-            Debug ? printf("Out buffer size: %zu\n", outBufferSize) : 0;
         }
 
         void Run(void) {
+
+            std::unique_ptr<EncoderCoreBase> encoder = nullptr;
+
+            const uint8_t whichSampleSize = ds.Get<uint8_t>() % 5;
+            if ( whichSampleSize == 0 ) {
+                encoder = std::make_unique<EncoderCore<short int, Debug>>(ds, flags);
+            } else if ( whichSampleSize == 1 ) {
+                encoder = std::make_unique<EncoderCore<int, Debug>>(ds, flags);
+            } else if ( whichSampleSize == 2 ) {
+                encoder = std::make_unique<EncoderCore<long, Debug>>(ds, flags);
+            } else if ( whichSampleSize == 3 ) {
+                encoder = std::make_unique<EncoderCore<float, Debug>>(ds, flags);
+            } else if ( whichSampleSize == 4 ) {
+                encoder = std::make_unique<EncoderCore<double, Debug>>(ds, flags);
+            }
+
+            setInputChannels();
             setBitrateMode();
             setChannelMode();
             setQuality();
             setOutSamplerate();
+            setID3();
+
+            Debug ? printf("lame_init_params(flags);\n") : 0;
 
             if ( lame_init_params(flags) == -1 ) {
                 abort();
             }
 
-            encodeLoop();
+            while ( encoder->Run(outBuffer, outBufferSize, mono) ) { }
         }
 
         ~EncoderFuzzer() {
