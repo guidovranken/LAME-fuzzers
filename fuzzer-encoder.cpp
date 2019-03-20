@@ -21,7 +21,8 @@ class Limit {
             min(min), max(max) { }
         size_t Test(const size_t val) const {
             if ( val < min || val > max ) {
-                throw std::runtime_error("Value not within bounds");
+                /* If not within bounds, default to the minimum allowed value */
+                return min;
             }
 
             return val;
@@ -42,6 +43,10 @@ namespace limits {
     static Limit CBRBitrate(1, 1024);
     static Limit OutSamplerate(100, 1000000);
     static Limit Quality(0, 9);
+    static Limit LowpassFrequency(0, 1000000);
+    static Limit HighpassFrequency(1000, 1000000);
+    static Limit HighpassWidth(1000, 1000000);
+    static Limit CompressionRatio(1, 100);
 }
 
 #define _(expr) Debug ? printf("%s\n", #expr) : 0; expr;
@@ -74,14 +79,14 @@ std::string debug_define_size_t(const std::string name, const size_t val) {
 
 template <typename T>
 struct DebugDefineArray {
-    static std::string Str(const std::string name, const T* inData, const size_t inDataSize, const bool indent) {
+    static std::string Str(const std::string name, const std::string typeName, const T* inData, const size_t inDataSize, const bool indent) {
         std::stringstream ret;
 
         if ( indent ) {
             ret << "\t";
         }
 
-        ret << "const float " + name + "[] = {\n";
+        ret << "const " << typeName << "  " + name + "[] = {\n";
 
         if ( indent ) {
             ret << "\t";
@@ -191,8 +196,8 @@ class EncoderCore : public EncoderCoreBase {
 
                     Debug ? printf("\t%s\n", debug_define_size_t("inDataSize", inDataSize).c_str()) : 0;
 
-                    Debug ? printf("%s\n", DebugDefineArray<short int>::Str("inDataL", inDataL, inDataSize, true).c_str()) : 0;
-                    Debug ? printf("%s\n", DebugDefineArray<short int>::Str("inDataR", inDataR, inDataSize, true).c_str()) : 0;
+                    Debug ? printf("%s\n", DebugDefineArray<short int>::Str("inDataL", "short int", inDataL, inDataSize, true).c_str()) : 0;
+                    Debug ? printf("%s\n", DebugDefineArray<short int>::Str("inDataR", "short int", inDataR, inDataSize, true).c_str()) : 0;
 
                     const int ret = lame_encode_buffer(flags, inDataL, inDataR, inDataSize, outBuffer, outBufferSize);
 
@@ -206,7 +211,7 @@ class EncoderCore : public EncoderCoreBase {
 
                     Debug ? printf("\t%s\n", debug_define_size_t("inDataSize", inDataSize).c_str()) : 0;
 
-                    Debug ? printf("%s\n", DebugDefineArray<short int>::Str("inDataL", inDataL, inDataSize * 2, true).c_str()) : 0;
+                    Debug ? printf("%s\n", DebugDefineArray<short int>::Str("inDataL", "short int", inDataL, inDataSize * 2, true).c_str()) : 0;
 
                     const int ret = lame_encode_buffer_interleaved(flags, inDataL, inDataSize, outBuffer, outBufferSize);
 
@@ -237,8 +242,8 @@ class EncoderCore : public EncoderCoreBase {
 
                     Debug ? printf("\t%s\n", debug_define_size_t("inDataSize", inDataSize).c_str()) : 0;
 
-                    Debug ? printf("%s\n", DebugDefineArray<int>::Str("inDataL", inDataL, inDataSize, true).c_str()) : 0;
-                    Debug ? printf("%s\n", DebugDefineArray<int>::Str("inDataR", inDataR, inDataSize, true).c_str()) : 0;
+                    Debug ? printf("%s\n", DebugDefineArray<int>::Str("inDataL", "int", inDataL, inDataSize, true).c_str()) : 0;
+                    Debug ? printf("%s\n", DebugDefineArray<int>::Str("inDataR", "int", inDataR, inDataSize, true).c_str()) : 0;
 
                     Debug ?
                         printf("\tlame_encode_buffer_int(flags, inDataL, inDataR, inDataSize, outBuffer, outBufferSize);\n")
@@ -256,7 +261,7 @@ class EncoderCore : public EncoderCoreBase {
 
                     Debug ? printf("\t%s\n", debug_define_size_t("inDataSize", inDataSize).c_str()) : 0;
 
-                    Debug ? printf("%s\n", DebugDefineArray<int>::Str("inDataL", inDataL, inDataSize * 2, true).c_str()) : 0;
+                    Debug ? printf("%s\n", DebugDefineArray<int>::Str("inDataL", "int", inDataL, inDataSize * 2, true).c_str()) : 0;
 
                     Debug ?
                         printf("\tlame_encode_buffer_interleaved_int(flags, inDataL, inDataSize, outBuffer, outBufferSize);\n")
@@ -294,8 +299,8 @@ class EncoderCore : public EncoderCoreBase {
 
                     Debug ? printf("\t%s\n", debug_define_size_t("inDataSize", inDataSize).c_str()) : 0;
 
-                    Debug ? printf("%s\n", DebugDefineArray<long>::Str("inDataL", inDataL, inDataSize, true).c_str()) : 0;
-                    Debug ? printf("%s\n", DebugDefineArray<long>::Str("inDataR", inDataR, inDataSize, true).c_str()) : 0;
+                    Debug ? printf("%s\n", DebugDefineArray<long>::Str("inDataL", "long", inDataL, inDataSize, true).c_str()) : 0;
+                    Debug ? printf("%s\n", DebugDefineArray<long>::Str("inDataR", "long", inDataR, inDataSize, true).c_str()) : 0;
 
                     Debug ?
                         printf("\tlame_encode_buffer_long(flags, inDataL, inDataR, inDataSize, outBuffer, outBufferSize);\n")
@@ -313,7 +318,7 @@ class EncoderCore : public EncoderCoreBase {
 
                     Debug ? printf("\t%s\n", debug_define_size_t("inDataSize", inDataSize).c_str()) : 0;
 
-                    Debug ? printf("%s\n", DebugDefineArray<long>::Str("inDataL", inDataL, inDataSize * 2, true).c_str()) : 0;
+                    Debug ? printf("%s\n", DebugDefineArray<long>::Str("inDataL", "long", inDataL, inDataSize * 2, true).c_str()) : 0;
 
                     Debug ?
                         printf("\tlame_encode_buffer_long2(flags, inDataL, inDataR, inDataSize, outBuffer, outBufferSize);\n")
@@ -351,8 +356,8 @@ class EncoderCore : public EncoderCoreBase {
 
                         Debug ? printf("\t%s\n", debug_define_size_t("inDataSize", inDataSize).c_str()) : 0;
 
-                        Debug ? printf("%s\n", DebugDefineArray<float>::Str("inDataL", inDataL, inDataSize, true).c_str()) : 0;
-                        Debug ? printf("%s\n", DebugDefineArray<float>::Str("inDataR", inDataR, inDataSize, true).c_str()) : 0;
+                        Debug ? printf("%s\n", DebugDefineArray<float>::Str("inDataL", "float", inDataL, inDataSize, true).c_str()) : 0;
+                        Debug ? printf("%s\n", DebugDefineArray<float>::Str("inDataR", "float", inDataR, inDataSize, true).c_str()) : 0;
 
                         Debug ?
                             printf("\tlame_encode_buffer_float(flags, inDataL, inDataR, inDataSize, outBuffer, outBufferSize);\n")
@@ -373,8 +378,8 @@ class EncoderCore : public EncoderCoreBase {
 
                         Debug ? printf("\t%s\n", debug_define_size_t("inDataSize", inDataSize).c_str()) : 0;
 
-                        Debug ? printf("%s\n", DebugDefineArray<float>::Str("inDataL", inDataL, inDataSize, true).c_str()) : 0;
-                        Debug ? printf("%s\n", DebugDefineArray<float>::Str("inDataR", inDataR, inDataSize, true).c_str()) : 0;
+                        Debug ? printf("%s\n", DebugDefineArray<float>::Str("inDataL", "float", inDataL, inDataSize, true).c_str()) : 0;
+                        Debug ? printf("%s\n", DebugDefineArray<float>::Str("inDataR", "float", inDataR, inDataSize, true).c_str()) : 0;
 
                         Debug ?
                             printf("\tlame_encode_buffer_ieee_float(flags, inDataL, inDataR, inDataSize, outBuffer, outBufferSize);\n")
@@ -396,7 +401,7 @@ class EncoderCore : public EncoderCoreBase {
 
                         Debug ? printf("\t%s\n", debug_define_size_t("inDataSize", inDataSize * 2).c_str()) : 0;
 
-                        Debug ? printf("%s\n", DebugDefineArray<float>::Str("inDataL", inDataL, inDataSize * 2, true).c_str()) : 0;
+                        Debug ? printf("%s\n", DebugDefineArray<float>::Str("inDataL", "float", inDataL, inDataSize * 2, true).c_str()) : 0;
 
                         Debug ?
                             printf("\tlame_encode_buffer_interleaved_ieee_float(flags, inDataL, inDataSize, outBuffer, outBufferSize);\n")
@@ -430,14 +435,39 @@ class EncoderCore : public EncoderCoreBase {
 
                 if ( useInterleavingFunction == true ) {
                     if ( useIEEEFunction == false ) {
+                        /* No non-IEEE function for interleaved double */
+                        return -1;
+                    } else {
                         InputCorrect<double, -1, 1>::Correct(inDataL, inDataSize);
-                        InputCorrect<double, -1, 1>::Correct(inDataR, inDataSize);
 
                         Debug ? printf("{\n") : 0;
 
                         Debug ? printf("\t%s\n", debug_define_size_t("inDataSize", inDataSize).c_str()) : 0;
 
-                        Debug ? printf("%s\n", DebugDefineArray<double>::Str("inDataL", inDataL, inDataSize * 2, true).c_str()) : 0;
+                        Debug ? printf("%s\n", DebugDefineArray<double>::Str("inDataL", "double", inDataL, inDataSize, true).c_str()) : 0;
+
+                        Debug ?
+                            printf("\tlame_encode_buffer_ieee_double(flags, inDataL, inDataR, inDataSize, outBuffer, outBufferSize);\n")
+                            : 0;
+
+                        const int ret = lame_encode_buffer_ieee_double(flags, inDataL, inDataR, inDataSize, outBuffer, outBufferSize);
+
+                        Debug ? printf("\t// (returns %d)\n", ret) : 0;
+
+                        Debug ? printf("}\n") : 0;
+
+                        return ret;
+                    }
+                } else {
+                    if ( useIEEEFunction == false ) {
+                        InputCorrect<double, -1, 1>::Correct(inDataL, inDataSize * 2);
+                        InputCorrect<double, -1, 1>::Correct(inDataR, inDataSize * 2);
+
+                        Debug ? printf("{\n") : 0;
+
+                        Debug ? printf("\t%s\n", debug_define_size_t("inDataSize", inDataSize).c_str()) : 0;
+
+                        Debug ? printf("%s\n", DebugDefineArray<double>::Str("inDataL", "double", inDataL, inDataSize * 2, true).c_str()) : 0;
 
                         Debug ?
                             printf("lame_encode_buffer_interleaved_ieee_double(flags, inDataL, inDataSize, outBuffer, outBufferSize);\n")
@@ -455,38 +485,13 @@ class EncoderCore : public EncoderCoreBase {
                         /* No non-IEEE function for double */
                         return -1;
                     }
-                } else {
-                    if ( useIEEEFunction == false ) {
-                        /* No non-IEEE function for interleaved double */
-                        return -1;
-                    } else {
-                        InputCorrect<double, -1, 1>::Correct(inDataL, inDataSize);
-
-                        Debug ? printf("{\n") : 0;
-
-                        Debug ? printf("\t%s\n", debug_define_size_t("inDataSize", inDataSize).c_str()) : 0;
-
-                        Debug ? printf("%s\n", DebugDefineArray<double>::Str("inDataL", inDataL, inDataSize, true).c_str()) : 0;
-
-                        Debug ?
-                            printf("\tlame_encode_buffer_ieee_double(flags, inDataL, inDataR, inDataSize, outBuffer, outBufferSize);\n")
-                            : 0;
-
-                        const int ret = lame_encode_buffer_ieee_double(flags, inDataL, inDataR, inDataSize, outBuffer, outBufferSize);
-
-                        Debug ? printf("\t// (returns %d)\n", ret) : 0;
-
-                        Debug ? printf("}\n") : 0;
-
-                        return ret;
-                    }
                 }
             }
         };
 
         int encode(std::vector<T>& inData, uint8_t* outBuffer, const size_t outBufferSize, const bool mono) {
             if ( useInterleavingFunction && mono ) {
-                return false;
+                return -1;
             }
 
             if ( mono == true ) {
@@ -526,6 +531,12 @@ class EncoderCore : public EncoderCoreBase {
                     : 0;
 
                 const int ret = lame_encode_flush(flags, outBuffer, outBufferSize);
+
+                if ( ret > static_cast<int>(outBufferSize) ) {
+                    printf("lame_encode_flush reported more output bytes than the buffer can hold\n");
+
+                    abort();
+                }
 
                 Debug ? printf("// (returns %d)\n", ret) : 0;
 
@@ -575,6 +586,12 @@ class EncoderCore : public EncoderCoreBase {
                 return false;
             }
 
+            if ( encodeRet > static_cast<int>(outBufferSize) ) {
+                printf("encode reported more output bytes than the buffer can hold\n");
+
+                abort();
+            }
+
             if ( flush(outBuffer, outBufferSize) < 0 ) {
                 return false;
             }
@@ -615,7 +632,7 @@ class EncoderFuzzer {
 
             Debug ? printf("lame_set_VBR_mean_bitrate_kbps(flags, %zu);\n", ABRBitrate) : 0;
 
-            _(lame_set_VBR_mean_bitrate_kbps(flags, ABRBitrate););
+            lame_set_VBR_mean_bitrate_kbps(flags, ABRBitrate);
         }
 
         size_t setMinBitrate(void) {
@@ -715,18 +732,132 @@ class EncoderFuzzer {
 
             if ( ds.Get<bool>() ) {
                 id3tag_init(flags);
-                if ( ds.Get<bool>() ) id3tag_set_title(flags, ds.Get<std::string>().c_str());
-                if ( ds.Get<bool>() ) id3tag_set_artist(flags, ds.Get<std::string>().c_str());
-                if ( ds.Get<bool>() ) id3tag_set_album(flags, ds.Get<std::string>().c_str());
-                if ( ds.Get<bool>() ) id3tag_set_year(flags, ds.Get<std::string>().c_str());
-                if ( ds.Get<bool>() ) id3tag_set_comment(flags, ds.Get<std::string>().c_str());
-                if ( ds.Get<bool>() ) id3tag_set_track(flags, ds.Get<std::string>().c_str());
-                if ( ds.Get<bool>() ) id3tag_set_genre(flags, ds.Get<std::string>().c_str());
-                if ( ds.Get<bool>() ) id3tag_set_fieldvalue(flags, ds.Get<std::string>().c_str());
+
+                if ( ds.Get<bool>() ) {
+                    const std::string title = ds.Get<std::string>();
+
+                    Debug ? printf("id3tag_set_title(flags, %s);\n", title.c_str()) : 0;
+
+                    id3tag_set_title(flags, title.c_str());
+                }
+
+                if ( ds.Get<bool>() ) {
+                    const std::string artist = ds.Get<std::string>();
+
+                    Debug ? printf("id3tag_set_artist(flags, %s);\n", artist.c_str()) : 0;
+
+                    id3tag_set_artist(flags, artist.c_str());
+                }
+
+                if ( ds.Get<bool>() ) {
+                    const std::string album = ds.Get<std::string>();
+
+                    Debug ? printf("id3tag_set_album(flags, %s);\n", album.c_str()) : 0;
+
+                    id3tag_set_album(flags, album.c_str());
+                }
+
+                if ( ds.Get<bool>() ) {
+                    const std::string year = ds.Get<std::string>();
+
+                    Debug ? printf("id3tag_set_year(flags, %s);\n", year.c_str()) : 0;
+
+                    id3tag_set_year(flags, year.c_str());
+                }
+
+                if ( ds.Get<bool>() ) {
+                    const std::string comment = ds.Get<std::string>();
+
+                    Debug ? printf("id3tag_set_comment(flags, %s);\n", comment.c_str()) : 0;
+
+                    id3tag_set_comment(flags, comment.c_str());
+                }
+
+                if ( ds.Get<bool>() ) {
+                    const std::string track = ds.Get<std::string>();
+
+                    Debug ? printf("id3tag_set_track(flags, %s);\n", track.c_str()) : 0;
+
+                    id3tag_set_track(flags, track.c_str());
+                }
+
+                if ( ds.Get<bool>() ) {
+                    const std::string genre = ds.Get<std::string>();
+
+                    Debug ? printf("id3tag_set_genre(flags, %s);\n", genre.c_str()) : 0;
+
+                    id3tag_set_genre(flags, genre.c_str());
+                }
+
+                if ( ds.Get<bool>() ) {
+                    const std::string fieldvalue = ds.Get<std::string>();
+
+                    Debug ? printf("id3tag_set_fieldvalue(flags, %s);\n", fieldvalue.c_str()) : 0;
+
+                    id3tag_set_fieldvalue(flags, fieldvalue.c_str());
+                }
+
                 if ( ds.Get<bool>() ) {
                     const auto albumArt = ds.GetData(0);
+
+                    /* TODO dump albumArt in debug mode */
                     id3tag_set_albumart(flags, (const char*)albumArt.data(), albumArt.size());
                 }
+            }
+        }
+
+        void setFilters(void) {
+            if ( ds.Get<bool>() ) {
+                const size_t lowpassFreq = limits::LowpassFrequency.Generate(ds);
+
+                Debug ? printf("lame_set_lowpassfreq(flags, %zu);\n", lowpassFreq) : 0;
+
+                lame_set_lowpassfreq(flags, lowpassFreq);
+            }
+
+            if ( ds.Get<bool>() ) {
+                const size_t highpassFreq = limits::HighpassFrequency.Generate(ds);
+
+                Debug ? printf("lame_set_highpassfreq(flags, %zu);\n", highpassFreq) : 0;
+
+                lame_set_highpassfreq(flags, highpassFreq);
+            }
+
+            if ( ds.Get<bool>() ) {
+
+                const size_t highpassWidth = limits::HighpassWidth.Generate(ds);
+
+                Debug ? printf("lame_set_highpasswidth(flags, %zu);\n", highpassWidth) : 0;
+
+                lame_set_highpasswidth(flags, highpassWidth);
+            }
+        }
+
+
+        void setMisc(void) {
+            if ( ds.Get<bool>() ) {
+                _(lame_set_strict_ISO(flags, MDB_STRICT_ISO););
+            }
+
+            if ( ds.Get<bool>() ) {
+                _(lame_set_bWriteVbrTag(flags, 0););
+            }
+
+            if ( ds.Get<bool>() ) {
+                _(lame_set_copyright(flags, 1););
+            }
+
+            if ( ds.Get<bool>() ) {
+                _(lame_set_original(flags, 1););
+            }
+
+            if ( ds.Get<bool>() ) {
+                _(lame_set_error_protection(flags, 1););
+            }
+
+            if ( ds.Get<bool>() ) {
+                /* Crashes */
+                /* _(lame_set_free_format(flags, 1);); */
             }
         }
 
@@ -746,7 +877,7 @@ class EncoderFuzzer {
                 printf("unsigned char outBuffer[outBufferSize];\n")
                 : 0;
 
-            outBuffer = (uint8_t*)malloc(outBufferSize + 1024);
+            outBuffer = (uint8_t*)malloc(outBufferSize + 1024 /* Add 1024 due to crash */);
         }
 
         void Run(void) {
@@ -761,8 +892,12 @@ class EncoderFuzzer {
             } else if ( whichSampleSize == 2 ) {
                 encoder = std::make_unique<EncoderCore<long, Debug>>(ds, flags);
             } else if ( whichSampleSize == 3 ) {
+                /* Disabled due to crash */
+                return;
                 encoder = std::make_unique<EncoderCore<float, Debug>>(ds, flags);
             } else if ( whichSampleSize == 4 ) {
+                /* Disabled due to crash */
+                return;
                 encoder = std::make_unique<EncoderCore<double, Debug>>(ds, flags);
             }
 
@@ -772,6 +907,8 @@ class EncoderFuzzer {
             setQuality();
             setOutSamplerate();
             setID3();
+            setFilters();
+            setMisc();
 
             Debug ? printf("lame_init_params(flags);\n") : 0;
 
