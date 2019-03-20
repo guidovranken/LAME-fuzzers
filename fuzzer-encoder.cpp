@@ -199,6 +199,10 @@ class EncoderCore : public EncoderCoreBase {
                     Debug ? printf("%s\n", DebugDefineArray<short int>::Str("inDataL", "short int", inDataL, inDataSize, true).c_str()) : 0;
                     Debug ? printf("%s\n", DebugDefineArray<short int>::Str("inDataR", "short int", inDataR, inDataSize, true).c_str()) : 0;
 
+                    Debug ?
+                        printf("\tlame_encode_buffer(flags, inDataL, inDataR, inDataSize, outBuffer, outBufferSize);\n")
+                        : 0;
+
                     const int ret = lame_encode_buffer(flags, inDataL, inDataR, inDataSize, outBuffer, outBufferSize);
 
                     Debug ? printf("\t// (returns %d)\n", ret) : 0;
@@ -212,6 +216,10 @@ class EncoderCore : public EncoderCoreBase {
                     Debug ? printf("\t%s\n", debug_define_size_t("inDataSize", inDataSize).c_str()) : 0;
 
                     Debug ? printf("%s\n", DebugDefineArray<short int>::Str("inDataL", "short int", inDataL, inDataSize * 2, true).c_str()) : 0;
+
+                    Debug ?
+                        printf("\tlame_encode_buffer_interleaved(flags, inDataL, inDataSize, outBuffer, outBufferSize);\n")
+                        : 0;
 
                     const int ret = lame_encode_buffer_interleaved(flags, inDataL, inDataSize, outBuffer, outBufferSize);
 
