@@ -1,63 +1,66 @@
 /* LAME encoder fuzzer by Guido Vranken <guidovranken@gmail.com> */
 
 #include <fuzzing/datasource/datasource.hpp>
+#include <fuzzing/memory.hpp>
 #include <stdexcept>
 #include <memory>
 #include <string>
 #include <stdint.h>
 #include <stdlib.h>
+#include <limits>
 #include <cmath>
 #include <lame.h>
 #include <sstream>
 
+#ifdef MSAN
+extern "C" {
+    void __msan_allocated_memory(const volatile void* data, size_t size);
+}
+#endif
+
 using fuzzing::datasource::Datasource;
 
-class Limit {
-    private:
-        const size_t min;
-        const size_t max;
-    public:
-        Limit(const size_t min, const size_t max) :
-            min(min), max(max) { }
-        size_t Test(const size_t val) const {
-            if ( val < min || val > max ) {
-                /* If not within bounds, default to the minimum allowed value */
-                return min;
+namespace limits {
+    template <size_t Min, size_t Max>
+    class Limit {
+        static_assert(Min <= Max);
+
+        public:
+            Limit(void) { }
+
+            size_t Test(const size_t val) const {
+                if ( val < Min || val > Max ) {
+                    /* If not within bounds, default to the minimum allowed value */
+                    return Min;
+                }
+
+                return val;
             }
 
-            return val;
-        }
+            template <typename T = uint32_t>
+            size_t Generate(fuzzing::datasource::Datasource& ds) {
+                const size_t ret = ds.Get<T>();
+                return Test(ret);
+            }
+    };
 
-        template <typename T = uint32_t>
-        size_t Generate(fuzzing::datasource::Datasource& ds) {
-            const size_t ret = ds.Get<T>();
-            return Test(ret);
-        }
-};
-
-namespace limits {
-    static Limit OutBufferSize(1, 1024*1024);
-    static Limit MinBitrate(1, 1024);
-    static Limit MaxBitrate(1, 1024);
-    static Limit ABRBitrate(1, 1024);
-    static Limit CBRBitrate(1, 1024);
-    static Limit OutSamplerate(100, 1000000);
-    static Limit Quality(0, 9);
-    static Limit LowpassFrequency(0, 1000000);
-    static Limit HighpassFrequency(1000, 1000000);
-    static Limit HighpassWidth(1000, 1000000);
-    static Limit CompressionRatio(1, 100);
+    /* Set these to acceptable min/max limits */
+    static Limit<1, 1024*1024> OutBufferSize;
+    static Limit<1, 1024> MinBitrate;
+    static Limit<1, 1024> MaxBitrate;
+    static Limit<1, 1024> VBRQ;
+    static Limit<1, 1024> ABRBitrate;
+    static Limit<1, 1024> CBRBitrate;
+    static Limit<100, 1000000> OutSamplerate;
+    static Limit<0, 9> Quality;
+    static Limit<0, 1000000> LowpassFrequency;
+    static Limit<1000, 1000000> LowpassWidth;
+    static Limit<1000, 1000000> HighpassFrequency;
+    static Limit<1000, 1000000> HighpassWidth;
+    static Limit<1, 100> CompressionRatio;
 }
 
 #define _(expr) Debug ? printf("%s\n", #expr) : 0; expr;
-
-class EncoderCoreBase {
-    public:
-        EncoderCoreBase(void) { }
-        virtual ~EncoderCoreBase() { }
-        virtual bool Run(uint8_t* outBuffer, const size_t outBufferSize, const bool mono) = 0;
-};
-
 
 template <typename T> bool isNAN(const T& val) {
     (void)val;
@@ -114,6 +117,13 @@ struct DebugDefineArray {
     }
 };
 
+class EncoderCoreBase {
+    public:
+        EncoderCoreBase(void) { }
+        virtual ~EncoderCoreBase() { }
+        virtual bool Run(uint8_t* outBuffer, const size_t outBufferSize, const bool mono) = 0;
+};
+
 template <typename T, bool Debug>
 class EncoderCore : public EncoderCoreBase {
     private:
@@ -140,6 +150,7 @@ class EncoderCore : public EncoderCoreBase {
                 /* Correct NAN values */
                 for (size_t i = 0; i < toInsert.size(); i++) {
                     if ( isNAN(toInsert[i]) ) {
+                        /* If NaN, set to default value (0.0) */
                         toInsert[i] = {};
                     }
                 }
@@ -151,6 +162,9 @@ class EncoderCore : public EncoderCoreBase {
 
         template <typename _T, long Min, long Max>
         struct InputCorrect {
+            static_assert(std::numeric_limits<_T>::lowest() <= Min);
+            static_assert(std::numeric_limits<_T>::max() >= Max);
+
             static void Correct(_T* inData, const size_t inDataSize) {
                 if ( inData == nullptr ) {
                     return;
@@ -508,20 +522,25 @@ class EncoderCore : public EncoderCoreBase {
                 const size_t numSamples = inData.size() / 2;
 
                 std::vector<T> inDataCopy;
-                inDataCopy.resize(numSamples);
+                inDataCopy.resize(numSamples * 2);
 
-                memcpy(inDataCopy.data(), inData.data(), numSamples * 2);
+                memcpy(inDataCopy.data(), inData.data(), numSamples * 2 * sizeof(T));
 
                 return EncodeSingle<T, Debug>::encode(flags, inData.data(), nullptr, numSamples, outBuffer, outBufferSize, useInterleavingFunction, useIEEEFunction);
             } else {
                 std::vector<T> inDataL, inDataR;
 
-                inDataL.resize(inData.size() / 2);
-                inDataR.resize(inData.size() / 2);
+                size_t numSamples = inData.size();
+                if ( numSamples % 2 ) {
+                    numSamples--;
+                }
+                numSamples /= 2;
 
-                const size_t numSamples = inData.size() / 2;
-                memcpy(inDataL.data(), inData.data(), numSamples);
-                memcpy(inDataR.data(), inData.data() + numSamples, numSamples);
+                inDataL.resize(numSamples);
+                inDataR.resize(numSamples);
+
+                memcpy(inDataL.data(), inData.data(), numSamples * sizeof(T));
+                memcpy(inDataR.data(), inData.data() + numSamples, numSamples * sizeof(T));
 
                 return EncodeSingle<T, Debug>::encode(flags, inDataR.data(), inDataL.data(), numSamples, outBuffer, outBufferSize, useInterleavingFunction, useIEEEFunction);
             }
@@ -588,6 +607,10 @@ class EncoderCore : public EncoderCoreBase {
             auto& inData = *it;
             it++;
 
+#ifdef MSAN
+             __msan_allocated_memory(outBuffer, outBufferSize);
+#endif
+
             const int encodeRet = encode(inData, outBuffer, outBufferSize, mono);
 
             if ( encodeRet < 0 ) {
@@ -600,9 +623,19 @@ class EncoderCore : public EncoderCoreBase {
                 abort();
             }
 
-            if ( flush(outBuffer, outBufferSize) < 0 ) {
+            fuzzing::memory::memory_test_msan(outBuffer, encodeRet);
+
+#ifdef MSAN
+             __msan_allocated_memory(outBuffer, outBufferSize);
+#endif
+
+            const int flushRet = flush(outBuffer, outBufferSize);
+
+            if ( flushRet < 0 ) {
                 return false;
             }
+
+            fuzzing::memory::memory_test_msan(outBuffer, flushRet);
 
             if ( encodeRet == 0 ) {
                 return false;
@@ -622,7 +655,6 @@ class EncoderFuzzer {
         lame_global_flags* flags = nullptr;
         uint8_t* outBuffer = nullptr;
         const size_t outBufferSize;
-        std::vector< std::vector<int> > inDataV;
         bool mono = false;
 
         void setBitrateModeVBR_RH(void) {
@@ -643,6 +675,16 @@ class EncoderFuzzer {
             lame_set_VBR_mean_bitrate_kbps(flags, ABRBitrate);
         }
 
+        void setVBRQ(void) {
+            if ( ds.Get<bool>() ) return;
+
+            const size_t vbrQ = limits::VBRQ.Generate<uint8_t>(ds);
+
+            Debug ? printf("lame_set_VBR_q(flags, %zu);\n", vbrQ) : 0;
+
+            lame_set_VBR_q(flags, vbrQ);
+        }
+
         size_t setMinBitrate(void) {
             if ( ds.Get<bool>() ) return 0;
 
@@ -658,9 +700,12 @@ class EncoderFuzzer {
         void setMaxBitrate(const size_t minBitrate) {
             if ( ds.Get<bool>() ) return;
 
-            const size_t maxBitrate = limits::MaxBitrate.Generate(ds);
+            size_t maxBitrate = limits::MaxBitrate.Generate(ds);
             if ( minBitrate > maxBitrate ) {
-                throw std::runtime_error("minBitrate > maxBitrate");
+                /* minBitrate should be <= maxBitrate, so if that is not the case,
+                 * set them both to the same value.
+                 */
+                maxBitrate = minBitrate;
             }
 
             Debug ? printf("lame_set_VBR_max_bitrate_kbps(flags, %zu);\n", maxBitrate) : 0;
@@ -675,8 +720,11 @@ class EncoderFuzzer {
             } else if ( whichVbr == 1 ) {
                 setBitrateModeVBR_MTRH();
             } else if ( whichVbr == 2 ) {
+                ///* Disabled due to crash */ throw std::runtime_error("");
                 setBitrateModeVBR_ABR();
             }
+
+            setVBRQ();
 
             size_t minBitrate = setMinBitrate();
             setMaxBitrate(minBitrate);
@@ -808,8 +856,18 @@ class EncoderFuzzer {
                 if ( ds.Get<bool>() ) {
                     const auto albumArt = ds.GetData(0);
 
-                    /* TODO dump albumArt in debug mode */
+                    Debug ? printf("{\n") : 0;
+
+                    Debug ? printf("\t%s\n", debug_define_size_t("albumArtSize", albumArt.size()).c_str()) : 0;
+                    Debug ? printf("%s\n", DebugDefineArray<unsigned char>::Str("albumart", "char", albumArt.data(), albumArt.size(), true).c_str()) : 0;
+
+                    Debug ?
+                        printf("\tid3tag_set_albumart(flags, albumArt, albumArtSize);\n")
+                        : 0;
+
                     id3tag_set_albumart(flags, (const char*)albumArt.data(), albumArt.size());
+
+                    Debug ? printf("}\n") : 0;
                 }
             }
         }
@@ -824,6 +882,14 @@ class EncoderFuzzer {
             }
 
             if ( ds.Get<bool>() ) {
+                const size_t lowpassWidth = limits::LowpassWidth.Generate(ds);
+
+                Debug ? printf("lame_set_lowpasswidth(flags, %zu);\n", lowpassWidth) : 0;
+
+                lame_set_lowpasswidth(flags, lowpassWidth);
+            }
+
+            if ( ds.Get<bool>() ) {
                 const size_t highpassFreq = limits::HighpassFrequency.Generate(ds);
 
                 Debug ? printf("lame_set_highpassfreq(flags, %zu);\n", highpassFreq) : 0;
@@ -832,7 +898,6 @@ class EncoderFuzzer {
             }
 
             if ( ds.Get<bool>() ) {
-
                 const size_t highpassWidth = limits::HighpassWidth.Generate(ds);
 
                 Debug ? printf("lame_set_highpasswidth(flags, %zu);\n", highpassWidth) : 0;
@@ -861,6 +926,10 @@ class EncoderFuzzer {
 
             if ( ds.Get<bool>() ) {
                 _(lame_set_error_protection(flags, 1););
+            }
+
+            if ( ds.Get<bool>() ) {
+                _(lame_set_extension(flags, 1););
             }
 
             if ( ds.Get<bool>() ) {
@@ -901,7 +970,7 @@ class EncoderFuzzer {
                 encoder = std::make_unique<EncoderCore<long, Debug>>(ds, flags);
             } else if ( whichSampleSize == 3 ) {
                 /* Disabled due to crash */
-                return;
+                //return;
                 encoder = std::make_unique<EncoderCore<float, Debug>>(ds, flags);
             } else if ( whichSampleSize == 4 ) {
                 /* Disabled due to crash */
