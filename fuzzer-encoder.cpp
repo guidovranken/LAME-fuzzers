@@ -573,9 +573,11 @@ class EncoderCore : public EncoderCoreBase {
                 Debug ? printf("// (returns %d)\n", ret) : 0;
 
                 if ( ret > static_cast<int>(outBufferSize) ) {
-                    printf("lame_encode_flush reported more output bytes than the buffer can hold\n");
+                    /* Crashes
+                    printf("lame_encode_flush reported more output bytes (%zu) than the buffer can hold (%zu)\n", static_cast<size_t>(ret), outBufferSize);
 
                     abort();
+                    */
                 }
 
                 return ret;
