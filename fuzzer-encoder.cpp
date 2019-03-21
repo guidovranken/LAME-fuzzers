@@ -1,16 +1,16 @@
 /* LAME encoder fuzzer by Guido Vranken <guidovranken@gmail.com> */
 
+#include <cmath>
+#include <cstdint>
+#include <cstdlib>
 #include <fuzzing/datasource/datasource.hpp>
 #include <fuzzing/memory.hpp>
-#include <stdexcept>
-#include <memory>
-#include <string>
-#include <stdint.h>
-#include <stdlib.h>
-#include <limits>
-#include <cmath>
 #include <lame.h>
+#include <limits>
+#include <memory>
 #include <sstream>
+#include <stdexcept>
+#include <string>
 
 #ifdef MSAN
 extern "C" {
@@ -62,6 +62,9 @@ namespace limits {
 
 #define _(expr) Debug ? printf("%s\n", #expr) : 0; expr;
 
+/* Unspecialized method, for all types other than
+ * float and double; do nothing.
+ */
 template <typename T> bool isNAN(const T& val) {
     (void)val;
 
@@ -89,7 +92,7 @@ struct DebugDefineArray {
             ret << "\t";
         }
 
-        ret << "const " << typeName << "  " + name + "[] = {\n";
+        ret << "const " << typeName << "  " << name << "[] = {\n";
 
         if ( indent ) {
             ret << "\t";
@@ -157,6 +160,7 @@ class EncoderCore : public EncoderCoreBase {
 
                 inDataV.push_back(toInsert);
             }
+
             it = inDataV.begin();
         }
 
@@ -340,7 +344,8 @@ class EncoderCore : public EncoderCoreBase {
 
                     Debug ? printf("\t%s\n", debug_define_size_t("inDataSize", inDataSize).c_str()) : 0;
 
-                    Debug ? printf("%s\n", DebugDefineArray<long>::Str("inDataL", "long", inDataL, inDataSize * 2, true).c_str()) : 0;
+                    Debug ? printf("%s\n", DebugDefineArray<long>::Str("inDataL", "long", inDataL, inDataSize, true).c_str()) : 0;
+                    Debug ? printf("%s\n", DebugDefineArray<long>::Str("inDataR", "long", inDataR, inDataSize, true).c_str()) : 0;
 
                     Debug ?
                         printf("\tlame_encode_buffer_long2(flags, inDataL, inDataR, inDataSize, outBuffer, outBufferSize);\n")
@@ -455,18 +460,20 @@ class EncoderCore : public EncoderCoreBase {
                     bool useInterleavingFunction,
                     bool useIEEEFunction) {
 
-                if ( useInterleavingFunction == true ) {
+                if ( useInterleavingFunction == false ) {
                     if ( useIEEEFunction == false ) {
                         /* No non-IEEE function for interleaved double */
                         return -1;
                     } else {
                         InputCorrect<double, -1, 1>::Correct(inDataL, inDataSize);
+                        InputCorrect<double, -1, 1>::Correct(inDataR, inDataSize);
 
                         Debug ? printf("{\n") : 0;
 
                         Debug ? printf("\t%s\n", debug_define_size_t("inDataSize", inDataSize).c_str()) : 0;
 
                         Debug ? printf("%s\n", DebugDefineArray<double>::Str("inDataL", "double", inDataL, inDataSize, true).c_str()) : 0;
+                        Debug ? printf("%s\n", DebugDefineArray<double>::Str("inDataR", "double", inDataR, inDataSize, true).c_str()) : 0;
 
                         Debug ?
                             printf("\tlame_encode_buffer_ieee_double(flags, inDataL, inDataR, inDataSize, outBuffer, outBufferSize);\n")
@@ -483,7 +490,6 @@ class EncoderCore : public EncoderCoreBase {
                 } else {
                     if ( useIEEEFunction == false ) {
                         InputCorrect<double, -1, 1>::Correct(inDataL, inDataSize * 2);
-                        InputCorrect<double, -1, 1>::Correct(inDataR, inDataSize * 2);
 
                         Debug ? printf("{\n") : 0;
 
@@ -528,21 +534,26 @@ class EncoderCore : public EncoderCoreBase {
 
                 return EncodeSingle<T, Debug>::encode(flags, inData.data(), nullptr, numSamples, outBuffer, outBufferSize, useInterleavingFunction, useIEEEFunction);
             } else {
-                std::vector<T> inDataL, inDataR;
-
                 size_t numSamples = inData.size();
+
+                /* Round to a multiple of 2 */
                 if ( numSamples % 2 ) {
                     numSamples--;
                 }
+
+                /* To samples per channel */
                 numSamples /= 2;
 
+                /* Left, right channels */
+                std::vector<T> inDataL, inDataR;
                 inDataL.resize(numSamples);
                 inDataR.resize(numSamples);
 
+                /* Split inData evenly between inDataL and inDataR */
                 memcpy(inDataL.data(), inData.data(), numSamples * sizeof(T));
                 memcpy(inDataR.data(), inData.data() + numSamples, numSamples * sizeof(T));
 
-                return EncodeSingle<T, Debug>::encode(flags, inDataR.data(), inDataL.data(), numSamples, outBuffer, outBufferSize, useInterleavingFunction, useIEEEFunction);
+                return EncodeSingle<T, Debug>::encode(flags, inDataL.data(), inDataR.data(), numSamples, outBuffer, outBufferSize, useInterleavingFunction, useIEEEFunction);
             }
         }
 
@@ -559,13 +570,13 @@ class EncoderCore : public EncoderCoreBase {
 
                 const int ret = lame_encode_flush(flags, outBuffer, outBufferSize);
 
+                Debug ? printf("// (returns %d)\n", ret) : 0;
+
                 if ( ret > static_cast<int>(outBufferSize) ) {
                     printf("lame_encode_flush reported more output bytes than the buffer can hold\n");
 
                     abort();
                 }
-
-                Debug ? printf("// (returns %d)\n", ret) : 0;
 
                 return ret;
             } else {
@@ -608,6 +619,9 @@ class EncoderCore : public EncoderCoreBase {
             it++;
 
 #ifdef MSAN
+            /* Poison the outbuffer so if encode() puts uninitialized memory in it,
+             * this can be detected.
+             */
              __msan_allocated_memory(outBuffer, outBufferSize);
 #endif
 
@@ -617,15 +631,18 @@ class EncoderCore : public EncoderCoreBase {
                 return false;
             }
 
+            /* static_cast is safe because outBufferSize is never anywhere near 2**31 */
             if ( encodeRet > static_cast<int>(outBufferSize) ) {
                 printf("encode reported more output bytes than the buffer can hold\n");
 
                 abort();
             }
 
+#ifdef MSAN
+            /* Check for uninitialized data in the output buffer */
             fuzzing::memory::memory_test_msan(outBuffer, encodeRet);
 
-#ifdef MSAN
+            /* Poison it again */
              __msan_allocated_memory(outBuffer, outBufferSize);
 #endif
 
@@ -715,12 +732,13 @@ class EncoderFuzzer {
 
         void setBitrateModeVBR(void) {
             const uint8_t whichVbr = ds.Get<uint8_t>() % 3;
+
             if ( whichVbr == 0 ) {
                 setBitrateModeVBR_RH();
             } else if ( whichVbr == 1 ) {
                 setBitrateModeVBR_MTRH();
             } else if ( whichVbr == 2 ) {
-                ///* Disabled due to crash */ throw std::runtime_error("");
+                /* Disabled due to crash */ throw std::runtime_error("");
                 setBitrateModeVBR_ABR();
             }
 
@@ -737,7 +755,7 @@ class EncoderFuzzer {
 
             Debug ? printf("lame_set_brate(flags, %zu);\n", bitrate) : 0;
 
-            _(lame_set_brate(flags, bitrate););
+            lame_set_brate(flags, bitrate);
         }
 
         void setBitrateMode(void) {
@@ -758,6 +776,7 @@ class EncoderFuzzer {
 
         void setChannelMode(void) {
             const uint8_t whichChannelMode = ds.Get<uint8_t>() % 3;
+
             if ( whichChannelMode == 0 ) {
                 _(lame_set_mode(flags, STEREO););
             } else if ( whichChannelMode == 1 ) {
@@ -865,9 +884,9 @@ class EncoderFuzzer {
                         printf("\tid3tag_set_albumart(flags, albumArt, albumArtSize);\n")
                         : 0;
 
-                    id3tag_set_albumart(flags, (const char*)albumArt.data(), albumArt.size());
-
                     Debug ? printf("}\n") : 0;
+
+                    id3tag_set_albumart(flags, (const char*)albumArt.data(), albumArt.size());
                 }
             }
         }
@@ -913,7 +932,7 @@ class EncoderFuzzer {
             }
 
             if ( ds.Get<bool>() ) {
-                _(lame_set_bWriteVbrTag(flags, 0););
+                _(lame_set_bWriteVbrTag(flags, 1););
             }
 
             if ( ds.Get<bool>() ) {
@@ -948,7 +967,7 @@ class EncoderFuzzer {
             flags = lame_init();
 
             Debug ?
-                printf("const size_t outBufferSize = %zu\n", outBufferSize)
+                printf("const size_t outBufferSize = %zu;\n", outBufferSize)
                 : 0;
             Debug ?
                 printf("unsigned char outBuffer[outBufferSize];\n")
@@ -962,6 +981,7 @@ class EncoderFuzzer {
             std::unique_ptr<EncoderCoreBase> encoder = nullptr;
 
             const uint8_t whichSampleSize = ds.Get<uint8_t>() % 5;
+
             if ( whichSampleSize == 0 ) {
                 encoder = std::make_unique<EncoderCore<short int, Debug>>(ds, flags);
             } else if ( whichSampleSize == 1 ) {
@@ -969,12 +989,8 @@ class EncoderFuzzer {
             } else if ( whichSampleSize == 2 ) {
                 encoder = std::make_unique<EncoderCore<long, Debug>>(ds, flags);
             } else if ( whichSampleSize == 3 ) {
-                /* Disabled due to crash */
-                //return;
                 encoder = std::make_unique<EncoderCore<float, Debug>>(ds, flags);
             } else if ( whichSampleSize == 4 ) {
-                /* Disabled due to crash */
-                return;
                 encoder = std::make_unique<EncoderCore<double, Debug>>(ds, flags);
             }
 
